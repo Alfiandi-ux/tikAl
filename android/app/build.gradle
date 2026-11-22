@@ -1,0 +1,95 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+def repoRoot = rootProject.projectDir.parentFile
+def stagedPython = layout.buildDirectory.dir("generated/python")
+
+// Backend Flask dan aset web berada di akar repo. Salin ke source set
+// Python saat build supaya APK dan versi web selalu memakai sumber sama.
+tasks.register("stagePythonSources", Sync) {
+    from(repoRoot) {
+        include "app.py"
+        include "templates/**"
+        include "static/**"
+    }
+    into stagedPython
+}
+
+tasks.configureEach { task ->
+    if (task.name != "stagePythonSources" &&
+            (task.name == "preBuild" || task.name.toLowerCase().contains("python"))) {
+        task.dependsOn("stagePythonSources")
+    }
+}
+
+android {
+    namespace 'id.alfiandi.tikal'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "id.alfiandi.tikal"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "1.0.0"
+
+        ndk {
+            // HP Android modern (64-bit). APK jadi lebih kecil.
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    def keystorePath = System.getenv("KEYSTORE_PATH")
+    def keystorePassword = System.getenv("KEYSTORE_PASSWORD")
+    def keyAliasName = System.getenv("KEY_ALIAS")
+    def keyPasswordValue = System.getenv("KEY_PASSWORD")
+    def keystoreFile = keystorePath ? file(keystorePath) : null
+    def hasKeystore = keystoreFile != null && keystoreFile.exists()
+
+    signingConfigs {
+        if (hasKeystore) {
+            release {
+                storeFile keystoreFile
+                storePassword keystorePassword
+                keyAlias keyAliasName
+                keyPassword keyPasswordValue
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            // Pakai keystore release bila tersedia (CI); jika tidak,
+            // debug signing agar APK tetap bisa dipasang.
+            signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.12"
+        pip {
+            install "flask"
+            install "requests"
+        }
+    }
+    sourceSets {
+        getByName("main") {
+            srcDir stagedPython.get().asFile
+        }
+    }
+}

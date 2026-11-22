@@ -1,0 +1,113 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag rilis (mis. v1.0.0)"
+        required: true
+        default: "v1.0.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Siapkan Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Siapkan Python 3.12 (Chaquopy)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Siapkan Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build APK
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+          fi
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Tentukan versi
+        id: version
+        run: |
+          TAG="${{ inputs.version }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Siapkan berkas APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk \
+             "dist/tikAl-${{ steps.version.outputs.tag }}.apk"
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - name: Unggah artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tikAl-apk
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Terbitkan GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          NOTES=$(cat <<'EOF'
+          **tikAl** — unduh video TikTok tanpa watermark, kualitas HD. Berjalan sepenuhnya di HP: server dan mesin unduh sudah dibundel di dalam APK, jadi tidak perlu Termux atau komputer.
+
+          **Fitur**
+          - Video tanpa watermark (HD/SD) dan audio MP3
+          - Semua foto slideshow sekaligus dalam ZIP
+          - Pratinjau video sebelum mengunduh
+          - Riwayat unduhan tersimpan di perangkat
+          - Tanpa login, tanpa iklan, tanpa server eksternal
+
+          **Cara pasang**
+          1. Unduh `tikAl-*.apk` di bawah.
+          2. Buka berkasnya, izinkan "Instal dari sumber tidak dikenal" bila diminta.
+          3. Pasang dan buka aplikasi.
+
+          Berkas unduhan tersimpan di folder **Download**. Syarat: Android 8.0+ (arm64).
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.apk dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" dist/*.apk dist/SHA256SUMS.txt \
+              --title "tikAl $TAG" \
+              --notes "$NOTES"
+          fi
